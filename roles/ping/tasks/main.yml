@@ -1,16 +1,41 @@
-- name: Ping site
+- name: 检查站点连通性
   shell: |
-    if [[ "$(uname)" == "Linux" ]]; then
+    if [ "$(uname)" = "Linux" ]; then
       ping -c 1 -W 2 jd.com
     else
       ping -c 1 -t 2 jd.com
     fi
   register: ping_result
 
-- name: Ping result
+- name: 打印完整执行结果
   debug:
     var: ping_result
 
-#- name: Ping result
-#  debug:
-#    msg: "{{ ping_result.stdout_lines }}"
+- name: 分类打印执行结果
+  debug:
+    msg:
+      主机信息:
+        清单主机名: "{{ inventory_hostname }}"
+        连接地址: "{{ ansible_host | default(inventory_hostname) }}"
+      执行状态:
+        退出码: "{{ ping_result.rc | default('无数据') }}"
+        是否失败: "{{ ping_result.failed | default(false) }}"
+        是否变更: "{{ ping_result.changed | default(false) }}"
+        是否跳过: "{{ ping_result.skipped | default(false) }}"
+        提示信息: "{{ ping_result.msg | default('') }}"
+      执行命令: "{{ ping_result.cmd | default('') }}"
+      时间信息:
+        开始时间: "{{ ping_result.start | default('无数据') }}"
+        结束时间: "{{ ping_result.end | default('无数据') }}"
+        执行耗时: "{{ ping_result.delta | default('无数据') }}"
+      标准输出:
+        完整文本: "{{ ping_result.stdout | default('') }}"
+        按行列表: "{{ ping_result.stdout_lines | default([]) }}"
+      错误输出:
+        完整文本: "{{ ping_result.stderr | default('') }}"
+        按行列表: "{{ ping_result.stderr_lines | default([]) }}"
+      附加信息:
+        主机事实: "{{ ping_result.ansible_facts | default({}) }}"
+        警告信息: "{{ ping_result.warnings | default([]) }}"
+        弃用提示: "{{ ping_result.deprecations | default([]) }}"
+        异常信息: "{{ ping_result.exception | default('') }}"
