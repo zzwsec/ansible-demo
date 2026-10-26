@@ -2,7 +2,5 @@
 - name: Check connectivity to managed hosts
   hosts: all
   # gather_facts: false
-
-  tasks:
-    - name: Ping managed hosts
-      ansible.builtin.ping:
+  roles:
+    - ping
