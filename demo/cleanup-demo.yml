@@ -1,0 +1,37 @@
+---
+- name: 清理 Semaphore 更新演练服务和文件
+  hosts: all
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: 检查演练目录标记
+      ansible.builtin.stat:
+        path: /opt/semaphore-update-demo/.semaphore-demo
+      register: demo_marker
+
+    - name: 确认只清理由本示例创建的目录
+      ansible.builtin.assert:
+        that:
+          - demo_marker.stat.isreg | default(false)
+        fail_msg: 缺少演练标记，已停止清理，未删除文件。
+
+    - name: 停止演练服务并关闭开机启动
+      ansible.builtin.systemd_service:
+        name: semaphore-update-demo.service
+        state: stopped
+        enabled: false
+
+    - name: 删除演练服务文件
+      ansible.builtin.file:
+        path: /etc/systemd/system/semaphore-update-demo.service
+        state: absent
+
+    - name: 删除服务文件后重载 systemd 配置
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: 删除演练应用目录
+      ansible.builtin.file:
+        path: /opt/semaphore-update-demo
+        state: absent

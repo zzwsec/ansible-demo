@@ -1,0 +1,145 @@
+---
+- name: 演练上传压缩包并更新目标主机服务
+  hosts: all
+  gather_facts: false
+  become: true
+  serial: 1
+  any_errors_fatal: true
+
+  tasks:
+    - name: 校验执行容器内的更新包路径
+      ansible.builtin.assert:
+        that:
+          - update_artifact_path | default('') is match('^/.+\.tar\.gz$')
+          - not ansible_check_mode
+        fail_msg: 请在额外变量中设置 update_artifact_path，填写已上传的 tar.gz 更新包在执行容器内的绝对路径。
+
+    - name: 在 Ansible 控制端检查更新包
+      ansible.builtin.stat:
+        path: '{{ update_artifact_path }}'
+      delegate_to: localhost
+      become: false
+      register: demo_package
+
+    - name: 确认更新包存在且非空
+      ansible.builtin.assert:
+        that:
+          - demo_package.stat.isreg | default(false)
+          - demo_package.stat.size | default(0) | int > 0
+        fail_msg: 未找到可用的更新包，请确认已上传完成，并检查 Docker 目录挂载和读取权限。
+
+    - name: 检查目标主机是否已完成演练初始化
+      ansible.builtin.stat:
+        path: /opt/semaphore-update-demo/.semaphore-demo
+      register: demo_marker
+
+    - name: 确认演练目录标记存在
+      ansible.builtin.assert:
+        that:
+          - demo_marker.stat.isreg | default(false)
+        fail_msg: 请先在这台主机运行 setup-demo.yml 完成初始化。
+
+    - name: 从演练服务读取 WorkingDirectory
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - --property=WorkingDirectory
+          - --value
+          - semaphore-update-demo.service
+      register: demo_workdir
+      changed_when: false
+
+    - name: 确认更新范围仅为演练目录
+      ansible.builtin.assert:
+        that:
+          - demo_workdir.stdout | trim == '/opt/semaphore-update-demo'
+
+    - name: 传输更新包、解压、更新并验证
+      block:
+        - name: 在目标主机创建临时解压目录
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: semaphore-demo-
+          register: demo_stage
+
+        - name: 将控制端更新包传到目标主机并解压
+          ansible.builtin.unarchive:
+            src: '{{ update_artifact_path }}'
+            dest: '{{ demo_stage.path }}'
+
+        - name: 检查更新包中的模拟程序
+          ansible.builtin.stat:
+            path: '{{ demo_stage.path }}/app/p8_app_server'
+          register: demo_binary
+
+        - name: 确认 app/p8_app_server 存在且非空
+          ansible.builtin.assert:
+            that:
+              - demo_binary.stat.isreg | default(false)
+              - demo_binary.stat.size | default(0) | int > 0
+
+        - name: 停止演练服务
+          ansible.builtin.systemd_service:
+            name: semaphore-update-demo.service
+            state: stopped
+
+        - name: 将 app 目录内容覆盖到服务工作目录
+          ansible.builtin.copy:
+            src: '{{ demo_stage.path }}/app/'
+            dest: '{{ demo_workdir.stdout | trim }}/'
+            remote_src: true
+            mode: preserve
+
+        - name: 设置模拟程序的执行权限
+          ansible.builtin.file:
+            path: /opt/semaphore-update-demo/p8_app_server
+            mode: '0755'
+
+        - name: 启动更新后的演练服务
+          ansible.builtin.systemd_service:
+            name: semaphore-update-demo.service
+            state: started
+
+        - name: 等待新程序写入 demo-v2 运行版本
+          ansible.builtin.command:
+            argv: [cat, /opt/semaphore-update-demo/running-version.txt]
+          register: demo_running_version
+          changed_when: false
+          retries: 5
+          delay: 1
+          until: demo_running_version.rc == 0 and demo_running_version.stdout == 'demo-v2'
+
+        - name: 确认演练服务处于运行状态
+          ansible.builtin.command:
+            argv: [systemctl, is-active, semaphore-update-demo.service]
+          register: demo_active
+          changed_when: false
+          failed_when: demo_active.rc != 0 or demo_active.stdout != 'active'
+
+        - name: 读取更新后的测试文本文件
+          ansible.builtin.command:
+            argv: [cat, /opt/semaphore-update-demo/message.txt]
+          register: demo_message
+          changed_when: false
+
+        - name: 校验测试文本文件已更新
+          ansible.builtin.assert:
+            that:
+              - demo_message.stdout == '这是通过 demo-v2 更新包分发的新文件。'
+
+        - name: 显示更新演练结果
+          ansible.builtin.debug:
+            msg:
+              更新包路径: '{{ update_artifact_path }}'
+              服务名称: semaphore-update-demo.service
+              服务状态: '{{ demo_active.stdout }}'
+              运行版本: '{{ demo_running_version.stdout }}'
+              更新后文件内容: '{{ demo_message.stdout }}'
+
+      always:
+        - name: 清理本次运行的临时解压目录
+          ansible.builtin.file:
+            path: '{{ demo_stage.path }}'
+            state: absent
+          when: demo_stage is defined and demo_stage.path is defined

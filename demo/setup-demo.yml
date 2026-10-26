@@ -1,0 +1,97 @@
+---
+- name: 在目标主机创建独立的更新演练服务
+  hosts: all
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: 检查演练目录是否已存在
+      ansible.builtin.stat:
+        path: /opt/semaphore-update-demo
+      register: demo_directory
+
+    - name: 检查演练目录标记
+      ansible.builtin.stat:
+        path: /opt/semaphore-update-demo/.semaphore-demo
+      register: demo_marker
+
+    - name: 检查演练服务文件是否已存在
+      ansible.builtin.stat:
+        path: /etc/systemd/system/semaphore-update-demo.service
+      register: demo_unit
+
+    - name: 确认不会覆盖其他目录或服务
+      ansible.builtin.assert:
+        that:
+          - not demo_directory.stat.exists or demo_marker.stat.exists
+          - not demo_unit.stat.exists or demo_marker.stat.exists
+        fail_msg: 演练目录或服务文件已存在，但缺少演练标记，停止初始化。
+
+    - name: 创建演练目录
+      ansible.builtin.file:
+        path: /opt/semaphore-update-demo
+        state: directory
+        mode: '0755'
+
+    - name: 写入演练目录标记
+      ansible.builtin.copy:
+        dest: /opt/semaphore-update-demo/.semaphore-demo
+        content: "semaphore-update-demo\n"
+        mode: '0644'
+
+    - name: 创建 demo-v1 模拟程序
+      ansible.builtin.copy:
+        dest: /opt/semaphore-update-demo/p8_app_server
+        mode: '0755'
+        content: |
+          #!/bin/sh
+          set -eu
+          printf '%s\n' 'demo-v1' > running-version.txt
+          exec sleep infinity
+
+    - name: 创建待更新的测试文本文件
+      ansible.builtin.copy:
+        dest: /opt/semaphore-update-demo/message.txt
+        content: "这是初始化时创建的 demo-v1 测试文件。\n"
+        mode: '0644'
+
+    - name: 创建演练专用的 systemd 服务
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/semaphore-update-demo.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Semaphore 更新演练服务
+
+          [Service]
+          Type=simple
+          WorkingDirectory=/opt/semaphore-update-demo
+          ExecStart=/opt/semaphore-update-demo/p8_app_server
+          Restart=no
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: 重载服务配置并启动 demo-v1，不设置开机启动
+      ansible.builtin.systemd_service:
+        name: semaphore-update-demo.service
+        daemon_reload: true
+        enabled: false
+        state: restarted
+
+    - name: 确认 demo-v1 模拟程序已启动
+      ansible.builtin.command:
+        argv: [cat, /opt/semaphore-update-demo/running-version.txt]
+      register: demo_initial_version
+      changed_when: false
+      retries: 5
+      delay: 1
+      until: demo_initial_version.rc == 0 and demo_initial_version.stdout == 'demo-v1'
+
+    - name: 显示初始化结果
+      ansible.builtin.debug:
+        msg:
+          服务名称: semaphore-update-demo.service
+          工作目录: /opt/semaphore-update-demo
+          运行版本: '{{ demo_initial_version.stdout }}'
+          下一步: 将 update-demo-v2.tar.gz 上传到 Semaphore 执行容器可读取的位置，再运行 update-demo.yml。
